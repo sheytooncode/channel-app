@@ -22,10 +22,15 @@ export default function LoginPage() {
     e.preventDefault()
     setError('')
     setLoading(true)
-    const supabase = createClient()
-    const { error } = await supabase.auth.signInWithPassword({ email, password })
-    if (error) { setError(error.message); setLoading(false) }
-    else        { router.push('/dashboard'); router.refresh() }
+    try {
+      const supabase = createClient()
+      const { error } = await supabase.auth.signInWithPassword({ email, password })
+      if (error) { setError(error.message); setLoading(false) }
+      else        { router.push('/dashboard'); router.refresh() }
+    } catch (err) {
+      setError(err?.message || 'Login failed. Please try again.')
+      setLoading(false)
+    }
   }
 
   return (
@@ -41,7 +46,7 @@ export default function LoginPage() {
         <form onSubmit={handleLogin} style={{ display:'flex', flexDirection:'column', gap:14 }}>
           <div><label style={{ fontSize:11, fontWeight:600, color:C.textSub, letterSpacing:'.06em', textTransform:'uppercase', display:'block', marginBottom:7 }}>Email</label><input type="email" value={email} onChange={e=>setEmail(e.target.value)} required placeholder="you@example.com" style={{ width:'100%', background:C.bg, border:`1px solid ${C.border}`, borderRadius:9, padding:'11px 14px', color:C.text, fontSize:14, outline:'none', transition:'border-color .15s' }} onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor=C.border}/></div>
           <div><label style={{ fontSize:11, fontWeight:600, color:C.textSub, letterSpacing:'.06em', textTransform:'uppercase', display:'block', marginBottom:7 }}>Password</label><input type="password" value={password} onChange={e=>setPassword(e.target.value)} required placeholder="••••••••" style={{ width:'100%', background:C.bg, border:`1px solid ${C.border}`, borderRadius:9, padding:'11px 14px', color:C.text, fontSize:14, outline:'none', transition:'border-color .15s' }} onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor=C.border}/></div>
-          <button type="submit" disabled={loading} style={{ marginTop:6, width:'100%', background:C.accent, border:'none', borderRadius:10, padding:'13px', color:'#0A0E1A', fontSize:14, fontWeight:800, letterSpacing:'.04em', opacity:loading?.7:1, transition:'opacity .15s' }}>{loading ? 'Signing in…...' : 'Sign in'}</button>
+          <button type="submit" disabled={loading} style={{ marginTop:6, width:'100%', background:C.accent, border:'none', borderRadius:10, padding:'13px', color:'#0A0E1A', fontSize:14, fontWeight:800, letterSpacing:'.04em', opacity:loading?.7:1, transition:'opacity .15s' }}>{loading ? 'Signing in…' : 'Sign in'}</button>
         </form>
         <p style={{ marginTop:22, textAlign:'center', fontSize:13, color:C.textSub }}>No account?{' '}<Link href="/signup" style={{ color:C.accent, textDecoration:'none', fontWeight:600 }}>Create one</Link></p>
       </div>

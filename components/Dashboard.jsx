@@ -1,5 +1,5 @@
 'use client'
-import { useState, useCallback, useMemo } from 'react'
+import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '../lib/supabase/client'
 import WeeklyPlanner from './WeeklyPlanner'
@@ -19,8 +19,8 @@ const GOAL_COLORS = ['#00C2FF', '#7C6FFF', '#FF6B9D', '#FFB347', '#4CAF50', '#FF
 
 function getTodayIndex() {
   const day = new Date().getDay()
-  if (day === 0 || day === 6) return 4 // weekend → show Friday
-  return day - 1 // Mon=0
+  if (day === 0 || day === 6) return 4
+  return day - 1
 }
 
 function Logo() {
@@ -39,11 +39,9 @@ function ChannelDepth({ tasks }) {
   const total = tasks.length
   const done  = tasks.filter(t => t.done).length
   const pct   = total > 0 ? Math.round((done / total) * 100) : 0
-
   const totalMins = tasks.reduce((s, t) => s + (t.mins || 0), 0)
   const doneMins  = tasks.filter(t => t.done).reduce((s, t) => s + (t.mins || 0), 0)
   const timePct   = totalMins > 0 ? Math.round((doneMins / totalMins) * 100) : 0
-
   const color = pct >= 80 ? C.success : pct >= 40 ? C.accent : C.high
 
   return (
@@ -67,11 +65,10 @@ function ChannelDepth({ tasks }) {
 
 function TaskCard({ task, goal, onToggle, onDelete, expanded, onToggleExpand }) {
   const goalColor = goal?.color || C.border
-
   return (
     <div style={{
       background: task.done ? C.surface2 : C.surface,
-      border: `1px solid ${task.done ? C.border : C.border}`,
+      border: `1px solid ${C.border}`,
       borderLeft: `3px solid ${goalColor}`,
       borderRadius: 10,
       padding: '12px 14px',
@@ -80,23 +77,20 @@ function TaskCard({ task, goal, onToggle, onDelete, expanded, onToggleExpand }) 
       transition: 'opacity .15s',
     }}>
       <div style={{ display:'flex', alignItems:'flex-start', gap:10 }}>
-        {/* Checkbox */}
         <button
           onClick={() => onToggle(task.id, !task.done)}
           style={{
-            width: 18, height: 18, borderRadius: 5, border: `2px solid ${task.done ? goalColor : C.border}`,
-            background: task.done ? goalColor : 'transparent', flexShrink: 0, marginTop: 1,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            cursor: 'pointer', transition: 'all .15s',
+            width:18, height:18, borderRadius:5, border:`2px solid ${task.done ? goalColor : C.border}`,
+            background: task.done ? goalColor : 'transparent', flexShrink:0, marginTop:1,
+            display:'flex', alignItems:'center', justifyContent:'center',
+            cursor:'pointer', transition:'all .15s',
           }}
         >
           {task.done && <svg width="10" height="8" viewBox="0 0 10 8" fill="none"><path d="M1 4 L4 7 L9 1" stroke="#0A0E1A" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
         </button>
-
-        {/* Content */}
         <div style={{ flex:1, minWidth:0 }}>
           <div style={{ display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' }}>
-            <p style={{ fontSize:14, color:task.done ? C.textMuted : C.text, margin:0, fontWeight:500, textDecoration: task.done ? 'line-through' : 'none', flex:1, minWidth:0 }}>
+            <p style={{ fontSize:14, color:task.done ? C.textMuted : C.text, margin:0, fontWeight:500, textDecoration:task.done ? 'line-through' : 'none', flex:1, minWidth:0 }}>
               {task.title}
             </p>
             {task.priority === 'high' && !task.done && (
@@ -121,70 +115,165 @@ function TaskCard({ task, goal, onToggle, onDelete, expanded, onToggleExpand }) 
             </div>
           )}
         </div>
-
-        {/* Delete */}
         <button onClick={() => onDelete(task.id)} style={{ background:'none', border:'none', color:C.textMuted, fontSize:16, cursor:'pointer', padding:'0 2px', lineHeight:1, flexShrink:0 }}>×</button>
       </div>
     </div>
   )
 }
 
-function AddTaskForm({ goals, dayIndex, weekStart, onAdd }) {
-  const [open, setOpen] = useState(false)
-  const [title, setTitle]   = useState('')
-  const [mins, setMins]     = useState(30)
-  const [goalId, setGoalId] = useState('')
-  const [priority, setPriority] = useState('normal')
-  const [saving, setSaving] = useState(false)
+function QuickCapture({ goals, dayIndex, weekStart, onAdd, onAddMany, autoFocus, onClose }) {
+  const [input, setInput]     = useState('')
+  const [parsing, setParsing] = useState(false)
+  const [preview, setPreview] = useState(null)
+  const [error, setError]     = useState('')
+  const textareaRef = useRef(null)
 
-  async function handleSubmit(e) {
-    e.preventDefault()
-    if (!title.trim()) return
-    setSaving(true)
+  const isMultiLine = input.includes('\n') || input.length > 120
+
+  useEffect(() => {
+    const el = textareaRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = Math.min(el.scrollHeight, 200) + 'px'
+  }, [input])
+
+  async function handleSubmit() {
+    if (!input.trim() || parsing) return
+    setParsing(true)
+    setError('')
     try {
-      await onAdd({ title: title.trim(), mins: Number(mins), goal_id: goalId || null, priority, day_index: dayIndex, week_start: weekStart, done: false, subtasks: [] })
-      setTitle(''); setMins(30); setGoalId(''); setPriority('normal')
-      setOpen(false)
+      const res = await fetch('/api/ai/parse', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ input, goals, dayIndex, weekStart }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to parse')
+
+      if (data.mode === 'single') {
+        await onAdd({ ...data.tasks[0], week_start: weekStart })
+        setInput('')
+        onClose?.()
+      } else {
+        setPreview(data.tasks)
+      }
+    } catch (err) {
+      setError(err.message || 'Something went wrong')
     } finally {
-      setSaving(false)
+      setParsing(false)
     }
   }
 
-  if (!open) {
+  async function confirmPreview() {
+    if (!preview) return
+    setParsing(true)
+    try {
+      await onAddMany(preview.map(t => ({ ...t, week_start: weekStart })))
+      setInput('')
+      setPreview(null)
+      onClose?.()
+    } catch (err) {
+      setError(err.message || 'Something went wrong')
+    } finally {
+      setParsing(false)
+    }
+  }
+
+  if (preview) {
     return (
-      <button onClick={() => setOpen(true)} style={{ width:'100%', background:'none', border:`1px dashed ${C.border}`, borderRadius:10, padding:'11px', color:C.textSub, fontSize:13, cursor:'pointer', textAlign:'center', transition:'border-color .15s, color .15s' }} onMouseEnter={e=>{e.target.style.borderColor=C.accent;e.target.style.color=C.accent}} onMouseLeave={e=>{e.target.style.borderColor=C.border;e.target.style.color=C.textSub}}>
-        + Add task
-      </button>
+      <div style={{ background:C.surface, border:`1px solid ${C.accent}40`, borderRadius:12, padding:16 }}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:14 }}>
+          <span style={{ fontSize:12, fontWeight:600, color:C.accent }}>✦ {preview.length} tasks extracted</span>
+          <button onClick={() => { setPreview(null); setInput('') }} style={{ background:'none', border:'none', color:C.textMuted, fontSize:18, cursor:'pointer', lineHeight:1 }}>×</button>
+        </div>
+        <div style={{ maxHeight:300, overflowY:'auto' }}>
+          {preview.map((t, i) => {
+            const goal = goals.find(g => g.id === t.goal_id)
+            return (
+              <div key={i} style={{ background:C.bg, border:`1px solid ${C.border}`, borderLeft:`3px solid ${goal?.color || C.border}`, borderRadius:8, padding:'10px 12px', marginBottom:8 }}>
+                <p style={{ fontSize:13, color:C.text, margin:'0 0 4px', fontWeight:500 }}>{t.title}</p>
+                <div style={{ display:'flex', gap:10 }}>
+                  <span style={{ fontSize:11, color:C.textMuted }}>{DAY_SHORT[t.day_index]}</span>
+                  <span style={{ fontSize:11, color:C.textMuted }}>{t.mins}m</span>
+                  {t.priority === 'high' && <span style={{ fontSize:11, color:C.high }}>⚡ high</span>}
+                  {goal && <span style={{ fontSize:11, color:goal.color }}>{goal.short}</span>}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+        <div style={{ display:'flex', gap:8, marginTop:12 }}>
+          <button onClick={() => { setPreview(null); setInput('') }} style={{ flex:1, background:'none', border:`1px solid ${C.border}`, borderRadius:8, padding:'10px', color:C.textSub, fontSize:13, cursor:'pointer' }}>
+            Cancel
+          </button>
+          <button onClick={confirmPreview} disabled={parsing} style={{ flex:2, background:C.accent, border:'none', borderRadius:8, padding:'10px', color:'#0A0E1A', fontSize:13, fontWeight:800, cursor:'pointer', opacity:parsing ? 0.7 : 1 }}>
+            {parsing ? 'Adding…' : `Add ${preview.length} tasks →`}
+          </button>
+        </div>
+      </div>
     )
   }
 
   return (
-    <form onSubmit={handleSubmit} style={{ background:C.surface, border:`1px solid ${C.accent}40`, borderRadius:10, padding:'14px' }}>
-      <input
-        autoFocus
-        value={title}
-        onChange={e => setTitle(e.target.value)}
-        placeholder="Task name..."
-        style={{ width:'100%', background:C.bg, border:`1px solid ${C.border}`, borderRadius:8, padding:'10px 12px', color:C.text, fontSize:14, outline:'none', marginBottom:10, boxSizing:'border-box', fontFamily:'inherit' }}
-      />
-      <div style={{ display:'flex', gap:8, marginBottom:10 }}>
-        <select value={goalId} onChange={e => setGoalId(e.target.value)} style={{ flex:1, background:C.bg, border:`1px solid ${C.border}`, borderRadius:8, padding:'8px 10px', color: goalId ? C.text : C.textSub, fontSize:13, outline:'none', cursor:'pointer' }}>
-          <option value="">No goal</option>
-          {goals.map(g => <option key={g.id} value={g.id}>{g.short} — {g.label}</option>)}
-        </select>
-        <select value={mins} onChange={e => setMins(e.target.value)} style={{ background:C.bg, border:`1px solid ${C.border}`, borderRadius:8, padding:'8px 10px', color:C.text, fontSize:13, outline:'none', cursor:'pointer' }}>
-          {[15,30,45,60,90,120].map(m => <option key={m} value={m}>{m}m</option>)}
-        </select>
-        <select value={priority} onChange={e => setPriority(e.target.value)} style={{ background:C.bg, border:`1px solid ${C.border}`, borderRadius:8, padding:'8px 10px', color:C.text, fontSize:13, outline:'none', cursor:'pointer' }}>
-          <option value="normal">Normal</option>
-          <option value="high">⚡ High</option>
-        </select>
+    <div>
+      <div style={{
+        background: C.surface,
+        border: `1px solid ${parsing ? C.accent + '80' : isMultiLine ? C.accent + '50' : C.border}`,
+        borderRadius: 12,
+        padding: '12px 14px',
+        transition: 'border-color .15s',
+      }}>
+        <textarea
+          ref={textareaRef}
+          autoFocus={autoFocus}
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === 'Enter' && !e.shiftKey && !isMultiLine) {
+              e.preventDefault()
+              handleSubmit()
+            }
+            if (e.key === 'Escape' && onClose) {
+              e.preventDefault()
+              onClose()
+            }
+          }}
+          placeholder={isMultiLine
+            ? 'Paste text, email, meeting notes… AI will extract all tasks'
+            : 'Add a task or paste anything…  ↵ to add, ⇧↵ for new line'}
+          rows={1}
+          style={{
+            width: '100%',
+            background: 'none',
+            border: 'none',
+            outline: 'none',
+            color: C.text,
+            fontSize: 14,
+            fontFamily: 'inherit',
+            resize: 'none',
+            lineHeight: 1.6,
+            boxSizing: 'border-box',
+            overflow: 'hidden',
+            display: 'block',
+          }}
+        />
+        {input.trim() && (
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginTop:10, paddingTop:10, borderTop:`1px solid ${C.border}` }}>
+            <span style={{ fontSize:11, color: isMultiLine ? C.accent : C.textMuted, opacity:.9 }}>
+              {isMultiLine ? '✦ AI will extract tasks from this text' : '↵ single task · paste more text for bulk'}
+            </span>
+            <button
+              onClick={handleSubmit}
+              disabled={parsing || !input.trim()}
+              style={{ background:C.accent, border:'none', borderRadius:7, padding:'6px 16px', color:'#0A0E1A', fontSize:12, fontWeight:800, cursor:'pointer', opacity:parsing ? 0.7 : 1, whiteSpace:'nowrap' }}
+            >
+              {parsing ? '…' : isMultiLine ? 'Extract tasks' : 'Add'}
+            </button>
+          </div>
+        )}
       </div>
-      <div style={{ display:'flex', gap:8 }}>
-        <button type="button" onClick={() => setOpen(false)} style={{ flex:1, background:'none', border:`1px solid ${C.border}`, borderRadius:8, padding:'9px', color:C.textSub, fontSize:13, cursor:'pointer' }}>Cancel</button>
-        <button type="submit" disabled={!title.trim() || saving} style={{ flex:2, background:C.accent, border:'none', borderRadius:8, padding:'9px', color:'#0A0E1A', fontSize:13, fontWeight:800, cursor:'pointer', opacity: title.trim() && !saving ? 1 : 0.5 }}>{saving ? 'Adding…' : 'Add task'}</button>
-      </div>
-    </form>
+      {error && <p style={{ fontSize:12, color:C.error, margin:'6px 0 0' }}>{error}</p>}
+    </div>
   )
 }
 
@@ -250,13 +339,11 @@ function GoalsPanel({ goals, tasks, onAddGoal, onClose }) {
               </div>
             )
           })}
-
           {goals.length < 3 && !adding && (
             <button onClick={() => setAdding(true)} style={{ width:'100%', background:'none', border:`1px dashed ${C.border}`, borderRadius:10, padding:12, color:C.textSub, fontSize:13, cursor:'pointer', textAlign:'center' }}>
               + Add goal
             </button>
           )}
-
           {adding && (
             <form onSubmit={handleAdd} style={{ background:C.bg, border:`1px solid ${C.accent}40`, borderRadius:10, padding:14 }}>
               <div style={{ marginBottom:10 }}>
@@ -290,33 +377,58 @@ function GoalsPanel({ goals, tasks, onAddGoal, onClose }) {
 }
 
 export default function Dashboard({ user, initialGoals, initialTasks, weekStart }) {
-  const router  = useRouter()
+  const router   = useRouter()
   const supabase = createClient()
 
   const [goals, setGoals]   = useState(initialGoals)
   const [tasks, setTasks]   = useState(initialTasks)
-  const [view, setView]     = useState('today')       // 'today' | 'week' | 'goals'
+  const [view, setView]     = useState('today')
   const [activeDay, setActiveDay] = useState(getTodayIndex())
   const [expandedTasks, setExpandedTasks] = useState({})
-  const [showGoals, setShowGoals] = useState(false)
+  const [showGoals, setShowGoals]   = useState(false)
   const [showPlanner, setShowPlanner] = useState(false)
+  const [cmdkOpen, setCmdkOpen]     = useState(false)
   const [carryingForward, setCarryingForward] = useState(false)
   const [toast, setToast]   = useState(null)
 
   const goalMap = useMemo(() => Object.fromEntries(goals.map(g => [g.id, g])), [goals])
+  const todayIdx = getTodayIndex()
+
+  // Cmd+K global shortcut
+  useEffect(() => {
+    function handler(e) {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault()
+        setCmdkOpen(prev => !prev)
+      }
+      if (e.key === 'Escape') setCmdkOpen(false)
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [])
 
   function showToast(msg, type = 'info') {
     setToast({ msg, type })
     setTimeout(() => setToast(null), 3000)
   }
 
-  // ─── API helpers ──────────────────────────────────
   async function addTask(taskData) {
     const res = await fetch('/api/tasks', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(taskData) })
     if (!res.ok) throw new Error('Failed to add task')
     const task = await res.json()
     setTasks(prev => [...prev, task])
+    showToast('Task added', 'success')
     return task
+  }
+
+  async function addManyTasks(taskList) {
+    const results = await Promise.all(taskList.map(t =>
+      fetch('/api/tasks', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(t) })
+        .then(r => r.json())
+    ))
+    setTasks(prev => [...prev, ...results])
+    showToast(`${results.length} tasks added`, 'success')
+    return results
   }
 
   async function toggleTask(id, done) {
@@ -340,8 +452,7 @@ export default function Dashboard({ user, initialGoals, initialTasks, weekStart 
   }
 
   async function addPlannerTasks(planTasks) {
-    const results = await Promise.all(planTasks.map(t => addTask({ ...t, week_start: weekStart })))
-    showToast(`${results.length} tasks added to your week!`, 'success')
+    await addManyTasks(planTasks.map(t => ({ ...t, week_start: weekStart })))
   }
 
   async function handleCarryForward() {
@@ -367,48 +478,36 @@ export default function Dashboard({ user, initialGoals, initialTasks, weekStart 
     setExpandedTasks(prev => ({ ...prev, [id]: !prev[id] }))
   }
 
-  // ─── Computed ───────────────────────────────────
-  const todayTasks = tasks.filter(t => t.day_index === getTodayIndex())
-  const displayTasks = view === 'today' ? todayTasks : view === 'week' ? tasks.filter(t => t.day_index === activeDay) : []
+  const todayTasks = tasks.filter(t => t.day_index === todayIdx)
 
-  const todayIdx = getTodayIndex()
-  const aiEnabled = typeof window !== 'undefined' && process.env.NEXT_PUBLIC_AI_ENABLED === 'true'
-
-  // ─── Layout ─────────────────────────────────────
   return (
     <div style={{ display:'flex', minHeight:'100vh', background:C.bg, color:C.text, fontFamily:"'Inter', -apple-system, sans-serif" }}>
 
-      {/* ─── Sidebar ─── */}
+      {/* ── Sidebar ── */}
       <aside style={{ width:240, minWidth:240, background:C.surface, borderRight:`1px solid ${C.border}`, display:'flex', flexDirection:'column', padding:'20px 0' }}>
         <div style={{ padding:'0 20px', marginBottom:28 }}>
           <Logo />
         </div>
 
-        {/* Nav */}
         <nav style={{ flex:1, padding:'0 12px' }}>
           {[
             { id:'today', label:'Today', icon:'◎' },
             { id:'week',  label:'This Week', icon:'▦' },
           ].map(({ id, label, icon }) => (
-            <button
-              key={id}
-              onClick={() => setView(id)}
-              style={{
-                display:'flex', alignItems:'center', gap:10, width:'100%', padding:'10px 14px',
-                borderRadius:10, border:'none', cursor:'pointer', marginBottom:2, textAlign:'left',
-                background: view === id ? C.accentSoft : 'none',
-                color: view === id ? C.accent : C.textSub,
-                fontSize:14, fontWeight: view === id ? 600 : 400,
-                transition:'background .15s, color .15s',
-              }}
-            >
+            <button key={id} onClick={() => setView(id)} style={{
+              display:'flex', alignItems:'center', gap:10, width:'100%', padding:'10px 14px',
+              borderRadius:10, border:'none', cursor:'pointer', marginBottom:2, textAlign:'left',
+              background: view === id ? C.accentSoft : 'none',
+              color: view === id ? C.accent : C.textSub,
+              fontSize:14, fontWeight: view === id ? 600 : 400,
+              transition:'background .15s, color .15s',
+            }}>
               <span style={{ fontSize:16 }}>{icon}</span>
               {label}
             </button>
           ))}
         </nav>
 
-        {/* Goals list */}
         <div style={{ padding:'0 12px', marginBottom:16 }}>
           <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'0 10px', marginBottom:8 }}>
             <span style={{ fontSize:11, fontWeight:700, color:C.textMuted, textTransform:'uppercase', letterSpacing:'.08em' }}>Goals</span>
@@ -436,13 +535,19 @@ export default function Dashboard({ user, initialGoals, initialTasks, weekStart 
           })}
         </div>
 
-        {/* Footer */}
         <div style={{ padding:'0 12px', borderTop:`1px solid ${C.border}`, paddingTop:16 }}>
-          {aiEnabled && (
-            <button onClick={() => setShowPlanner(true)} style={{ display:'flex', alignItems:'center', gap:8, width:'100%', padding:'9px 12px', borderRadius:8, border:`1px solid ${C.border}`, background:'none', color:C.textSub, fontSize:13, cursor:'pointer', marginBottom:8, textAlign:'left', transition:'border-color .15s, color .15s' }} onMouseEnter={e=>{e.currentTarget.style.borderColor=C.accent;e.currentTarget.style.color=C.accent}} onMouseLeave={e=>{e.currentTarget.style.borderColor=C.border;e.currentTarget.style.color=C.textSub}}>
-              <span>✦</span> AI Plan Week
-            </button>
-          )}
+          <button
+            onClick={() => setCmdkOpen(true)}
+            style={{ display:'flex', alignItems:'center', justifyContent:'space-between', width:'100%', padding:'9px 12px', borderRadius:8, border:`1px solid ${C.border}`, background:'none', color:C.textSub, fontSize:13, cursor:'pointer', marginBottom:8, transition:'border-color .15s, color .15s' }}
+            onMouseEnter={e=>{e.currentTarget.style.borderColor=C.accent;e.currentTarget.style.color=C.accent}}
+            onMouseLeave={e=>{e.currentTarget.style.borderColor=C.border;e.currentTarget.style.color=C.textSub}}
+          >
+            <span>⌘ Quick add</span>
+            <span style={{ fontSize:11, opacity:.5 }}>⌘K</span>
+          </button>
+          <button onClick={() => setShowPlanner(true)} style={{ display:'flex', alignItems:'center', gap:8, width:'100%', padding:'9px 12px', borderRadius:8, border:`1px solid ${C.border}`, background:'none', color:C.textSub, fontSize:13, cursor:'pointer', marginBottom:8, textAlign:'left', transition:'border-color .15s, color .15s' }} onMouseEnter={e=>{e.currentTarget.style.borderColor=C.accent;e.currentTarget.style.color=C.accent}} onMouseLeave={e=>{e.currentTarget.style.borderColor=C.border;e.currentTarget.style.color=C.textSub}}>
+            <span>✦</span> AI Plan Week
+          </button>
           <button onClick={handleCarryForward} disabled={carryingForward} style={{ display:'flex', alignItems:'center', gap:8, width:'100%', padding:'9px 12px', borderRadius:8, border:`1px solid ${C.border}`, background:'none', color:C.textSub, fontSize:13, cursor:'pointer', marginBottom:8, textAlign:'left', opacity: carryingForward ? 0.5 : 1 }}>
             <span>↩</span> {carryingForward ? 'Carrying…' : 'Carry Forward'}
           </button>
@@ -453,10 +558,9 @@ export default function Dashboard({ user, initialGoals, initialTasks, weekStart 
         </div>
       </aside>
 
-      {/* ─── Main ─── */}
+      {/* ── Main ── */}
       <main style={{ flex:1, overflowY:'auto', padding:32, minWidth:0 }}>
 
-        {/* Today view */}
         {view === 'today' && (
           <div style={{ maxWidth:640, margin:'0 auto' }}>
             <div style={{ marginBottom:28 }}>
@@ -470,7 +574,6 @@ export default function Dashboard({ user, initialGoals, initialTasks, weekStart 
 
             <ChannelDepth tasks={todayTasks} />
 
-            {/* Goals summary */}
             {goals.length > 0 && (
               <div style={{ display:'flex', gap:10, marginBottom:20 }}>
                 {goals.map(g => {
@@ -502,11 +605,17 @@ export default function Dashboard({ user, initialGoals, initialTasks, weekStart 
                 />
               ))}
             </div>
-            <AddTaskForm goals={goals} dayIndex={todayIdx} weekStart={weekStart} onAdd={addTask} />
+
+            <QuickCapture
+              goals={goals}
+              dayIndex={todayIdx}
+              weekStart={weekStart}
+              onAdd={addTask}
+              onAddMany={addManyTasks}
+            />
           </div>
         )}
 
-        {/* Week view */}
         {view === 'week' && (
           <div style={{ maxWidth:860, margin:'0 auto' }}>
             <div style={{ marginBottom:24 }}>
@@ -514,7 +623,6 @@ export default function Dashboard({ user, initialGoals, initialTasks, weekStart 
               <p style={{ fontSize:14, color:C.textSub, margin:0 }}>w/c {weekStart}</p>
             </div>
 
-            {/* Week overview */}
             <div style={{ display:'flex', gap:8, marginBottom:24 }}>
               {DAY_SHORT.map((d, i) => {
                 const dayTasks = tasks.filter(t => t.day_index === i)
@@ -523,11 +631,7 @@ export default function Dashboard({ user, initialGoals, initialTasks, weekStart 
                 const isToday = i === todayIdx
                 const isActive = i === activeDay
                 return (
-                  <div
-                    key={i}
-                    onClick={() => setActiveDay(i)}
-                    style={{ flex:1, background: isActive ? C.accentSoft : C.surface, border:`1px solid ${isActive ? C.accent : C.border}`, borderRadius:10, padding:'12px 8px', textAlign:'center', cursor:'pointer', transition:'all .15s' }}
-                  >
+                  <div key={i} onClick={() => setActiveDay(i)} style={{ flex:1, background: isActive ? C.accentSoft : C.surface, border:`1px solid ${isActive ? C.accent : C.border}`, borderRadius:10, padding:'12px 8px', textAlign:'center', cursor:'pointer', transition:'all .15s' }}>
                     <p style={{ fontSize:11, fontWeight:700, color: isToday ? C.accent : C.textSub, textTransform:'uppercase', letterSpacing:'.06em', margin:'0 0 6px' }}>{d}{isToday ? ' •' : ''}</p>
                     <p style={{ fontSize:18, fontWeight:800, color: isActive ? C.accent : C.text, margin:'0 0 6px' }}>{dayTasks.length}</p>
                     <div style={{ background:C.border, borderRadius:3, height:3, overflow:'hidden' }}>
@@ -538,7 +642,6 @@ export default function Dashboard({ user, initialGoals, initialTasks, weekStart 
               })}
             </div>
 
-            {/* Active day tasks */}
             <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:16 }}>
               <h2 style={{ fontSize:16, fontWeight:800, color:C.text, margin:0 }}>{DAY_NAMES[activeDay]}</h2>
               <span style={{ fontSize:13, color:C.textSub }}>
@@ -557,12 +660,18 @@ export default function Dashboard({ user, initialGoals, initialTasks, weekStart 
                 onToggleExpand={() => toggleExpand(task.id)}
               />
             ))}
-            <AddTaskForm goals={goals} dayIndex={activeDay} weekStart={weekStart} onAdd={addTask} />
+            <QuickCapture
+              goals={goals}
+              dayIndex={activeDay}
+              weekStart={weekStart}
+              onAdd={addTask}
+              onAddMany={addManyTasks}
+            />
           </div>
         )}
       </main>
 
-      {/* ─── Toast ─── */}
+      {/* ── Toast ── */}
       {toast && (
         <div style={{ position:'fixed', bottom:24, right:24, background: toast.type === 'error' ? C.error : toast.type === 'success' ? C.success : C.accent, color: toast.type === 'error' ? '#fff' : '#0A0E1A', padding:'12px 18px', borderRadius:10, fontSize:13, fontWeight:600, zIndex:2000, boxShadow:'0 4px 20px rgba(0,0,0,.4)', animation:'slideIn .2s ease' }}>
           {toast.msg}
@@ -570,7 +679,31 @@ export default function Dashboard({ user, initialGoals, initialTasks, weekStart 
         </div>
       )}
 
-      {/* ─── Modals ─── */}
+      {/* ── Cmd+K overlay ── */}
+      {cmdkOpen && (
+        <div
+          onClick={e => e.target === e.currentTarget && setCmdkOpen(false)}
+          style={{ position:'fixed', inset:0, background:'rgba(10,14,26,0.85)', backdropFilter:'blur(6px)', display:'flex', alignItems:'flex-start', justifyContent:'center', zIndex:1000, padding:'80px 16px 16px' }}
+        >
+          <div style={{ width:'100%', maxWidth:580 }}>
+            <div style={{ marginBottom:12, display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+              <span style={{ fontSize:12, color:C.textSub, letterSpacing:'.04em' }}>QUICK CAPTURE</span>
+              <span style={{ fontSize:11, color:C.textMuted }}>esc to close</span>
+            </div>
+            <QuickCapture
+              goals={goals}
+              dayIndex={todayIdx}
+              weekStart={weekStart}
+              onAdd={addTask}
+              onAddMany={addManyTasks}
+              autoFocus
+              onClose={() => setCmdkOpen(false)}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* ── Modals ── */}
       {showGoals && <GoalsPanel goals={goals} tasks={tasks} onAddGoal={addGoal} onClose={() => setShowGoals(false)} />}
       {showPlanner && <WeeklyPlanner goals={goals} onConfirm={addPlannerTasks} onClose={() => setShowPlanner(false)} />}
     </div>
